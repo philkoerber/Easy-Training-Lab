@@ -23,35 +23,38 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         self._load_model_from_object_store()
 
     def _load_model_from_object_store(self):
+        # QC Python Object Store uses snake_case methods: contains_key, read_bytes
+        store = self.ObjectStore
         # Resolve folder: use "ohlcv_latest" if present, else fall back to fixed "ohlcv_model"
         folder = "ohlcv_model"
-        if self.ObjectStore.ContainsKey(OHLCV_LATEST_KEY):
-            folder = self.ObjectStore.ReadBytes(OHLCV_LATEST_KEY).decode("utf-8").strip()
-            self.Debug(f"Using Object Store folder: {folder}")
+        if store.contains_key(OHLCV_LATEST_KEY):
+            raw = store.read_bytes(OHLCV_LATEST_KEY)
+            folder = bytes(raw).decode("utf-8").strip()
+            self.debug(f"Using Object Store folder: {folder}")
         norm_key = f"{folder}/norm_params.json"
         model_key = f"{folder}/model_state.pt"
-        if not self.ObjectStore.ContainsKey(norm_key):
-            self.Debug(f"Object Store: {norm_key} not found. Upload with: python3 scripts/wrap_up_for_qc.py --upload")
+        if not store.contains_key(norm_key):
+            self.debug(f"Object Store: {norm_key} not found. Upload with: python3 scripts/wrap_up_for_qc.py --upload")
             return
-        if not self.ObjectStore.ContainsKey(model_key):
-            self.Debug(f"Object Store: {model_key} not found.")
+        if not store.contains_key(model_key):
+            self.debug(f"Object Store: {model_key} not found.")
             return
 
-        # Load norm_params.json
-        norm_bytes = self.ObjectStore.ReadBytes(norm_key)
-        self.norm_params = json.loads(norm_bytes.decode("utf-8"))
-        self.Debug(f"Loaded norm_params: seq_len={self.norm_params['seq_len']}, pred_len={self.norm_params['pred_len']}, n_features={self.norm_params['n_features']}")
+        # Load norm_params.json (read_bytes returns .NET Byte[]; convert to Python bytes)
+        norm_bytes = store.read_bytes(norm_key)
+        self.norm_params = json.loads(bytes(norm_bytes).decode("utf-8"))
+        self.debug(f"Loaded norm_params: seq_len={self.norm_params['seq_len']}, pred_len={self.norm_params['pred_len']}, n_features={self.norm_params['n_features']}")
 
         # Load PyTorch state_dict (verify only; no forward pass here)
-        model_bytes = self.ObjectStore.ReadBytes(model_key)
+        model_bytes = store.read_bytes(model_key)
         import torch
         try:
-            state_dict = torch.load(io.BytesIO(model_bytes), map_location="cpu", weights_only=True)
+            state_dict = torch.load(io.BytesIO(bytes(model_bytes)), map_location="cpu", weights_only=True)
         except TypeError:
-            state_dict = torch.load(io.BytesIO(model_bytes), map_location="cpu")
+            state_dict = torch.load(io.BytesIO(bytes(model_bytes)), map_location="cpu")
         self.model_state = state_dict
-        self.Debug(f"Loaded model_state.pt: {len(state_dict)} parameter tensors")
-        self.Debug("Model loaded successfully.")
+        self.debug(f"Loaded model_state.pt: {len(state_dict)} parameter tensors")
+        self.debug("Model loaded successfully.")
 
     def on_data(self, data: Slice):
         if not self.portfolio.invested:
