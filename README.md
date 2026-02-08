@@ -69,7 +69,7 @@ python3 scripts/wrap_up_for_qc.py --upload
 ```
 
 - **Package:** `tmp/qc_package/model_state.pt`, `norm_params.json`, `manifest.json`. QC algorithms load these (PyTorch `state_dict` + same preprocessing).
-- **Upload:** Uses `QC_USER_ID`, `QC_API_TOKEN`, `QC_ORGANIZATION_ID`. Copy `.env.example` to `.env`, fill in real values from [QuantConnect settings](https://www.quantconnect.com/settings/) and your org page. Without valid credentials, the script only builds the package and reminds you to set the env vars.
+- **Upload:** Uses `QC_USER_ID`, `QC_API_TOKEN`, `QC_ORGANIZATION_ID`. Copy `.env.example` to `.env` and set values. User ID and API token: [My Account → Security](https://www.quantconnect.com/settings/). **Organization ID:** in the Algorithm Lab, click “Connected as: &lt;org name&gt;” in the top bar, open your organization, then copy the long hex string from the URL (e.g. `https://www.quantconnect.com/organization/5cad178b...` → the part after `/organization/`). Without valid credentials, the script only builds the package.
 
 ---
 
