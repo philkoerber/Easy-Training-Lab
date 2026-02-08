@@ -1,0 +1,6 @@
+# Local env with real API keys
+.env
+
+# Prepared data and training outputs
+tmp/
+
