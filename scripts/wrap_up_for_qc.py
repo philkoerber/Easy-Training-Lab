@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -21,7 +22,6 @@ try:
 except ImportError:
     load_dotenv = None
 
-QC_PREFIX = "ohlcv_model"
 BASE_URL = "https://www.quantconnect.com/api/v2"
 
 
@@ -29,9 +29,33 @@ def parse_args():
     p = argparse.ArgumentParser(description="Package model for QuantConnect and optionally upload.")
     p.add_argument("--model", type=Path, default=None, help="Path to tsai/fastai export (default: tmp/model.pth)")
     p.add_argument("--norm-params", type=Path, default=None, help="Path to norm_params.json (default: tmp/norm_params.json)")
+    p.add_argument("--meta", type=Path, default=None, help="Path to train_meta.txt for instrument/timeframe (default: tmp/train_meta.txt)")
     p.add_argument("--out-dir", type=Path, default=None, help="Package output dir (default: tmp/qc_package)")
     p.add_argument("--upload", action="store_true", help="Upload package to QuantConnect Object Store")
     return p.parse_args()
+
+
+def build_upload_folder_name(meta_path: Path, norm_path: Path) -> str:
+    """Build a descriptive folder name: ohlcv_{instrument}_{timeframe}_seq50_pred10_{timestamp}."""
+    parts = ["ohlcv"]
+    if meta_path.exists():
+        meta = {}
+        for line in meta_path.read_text().strip().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                meta[k.strip()] = v.strip()
+        instrument = meta.get("instrument", "unknown").lower()
+        timeframe = meta.get("timeframe", "unknown").lower().replace(" ", "")
+        parts.append(instrument)
+        parts.append(timeframe)
+    if norm_path.exists():
+        norm = json.loads(norm_path.read_text())
+        seq = norm.get("seq_len", "?")
+        pred = norm.get("pred_len", "?")
+        parts.append(f"seq{seq}_pred{pred}")
+    now = datetime.now(timezone.utc)
+    parts.append(now.strftime("%Y%m%d_%H%M%S"))
+    return "_".join(str(p) for p in parts)
 
 
 def get_qc_headers():
@@ -88,7 +112,7 @@ def build_package(model_path: Path, norm_path: Path, out_dir: Path) -> list[Path
     torch.save(state, dest_model)
     created.append(dest_model)
 
-    # Optional manifest
+    # Optional manifest (and folder name for upload)
     manifest = {
         "input_shape": [1, "n_features", "seq_len"],
         "output_steps": "pred_len",
@@ -98,6 +122,10 @@ def build_package(model_path: Path, norm_path: Path, out_dir: Path) -> list[Path
     created.append(out_dir / "manifest.json")
 
     return created
+
+
+# Key that stores the current upload folder name so the algorithm can resolve "latest"
+OHLCV_LATEST_KEY = "ohlcv_latest"
 
 
 def upload_file(headers: dict, org_id: str, key: str, file_path: Path) -> bool:
@@ -130,6 +158,7 @@ def main():
     tmp = root / "tmp"
     model_path = args.model or (tmp / "model.pth")
     norm_path = args.norm_params or (tmp / "norm_params.json")
+    meta_path = args.meta or (tmp / "train_meta.txt")
     out_dir = args.out_dir or (tmp / "qc_package")
 
     # Step 1: build package
@@ -140,6 +169,11 @@ def main():
     print(f"Package built in {out_dir}:")
     for p in created:
         print(f"  {p.name}")
+
+    # Folder name for Object Store (descriptive + timestamp)
+    folder_name = build_upload_folder_name(meta_path, norm_path)
+    (out_dir / "qc_folder.txt").write_text(folder_name + "\n")
+    print(f"Upload folder name: {folder_name}")
 
     # Step 2: optional upload
     if not args.upload:
@@ -152,11 +186,16 @@ def main():
         return
 
     for fpath in created:
-        key = f"{QC_PREFIX}/{fpath.name}"
+        key = f"{folder_name}/{fpath.name}"
         if upload_file(headers, org_id, key, fpath):
             print(f"Uploaded: {key}")
         else:
             sys.exit(1)
+    # So the algorithm can resolve "latest" without hardcoding the folder name
+    if upload_file(headers, org_id, OHLCV_LATEST_KEY, out_dir / "qc_folder.txt"):
+        print(f"Uploaded: {OHLCV_LATEST_KEY} (points to {folder_name})")
+    else:
+        sys.exit(1)
     print("Upload done.")
 
 

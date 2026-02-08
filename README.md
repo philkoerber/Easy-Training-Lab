@@ -79,6 +79,8 @@ python3 scripts/wrap_up_for_qc.py --upload
 Training Lab/
 ├── data/
 │   └── master_q4/          # Kraken CSVs (e.g. BTCUSD_1.csv)
+├── quantconnect/
+│   └── main.py             # Example QC algorithm: loads model from Object Store
 ├── scripts/
 │   ├── prepare_ohlcv.py    # 1. Filter & normalize OHLCV → tmp/train_ohlcv.csv
 │   ├── train_transformer.py # 2. Train TST → tmp/model.pth, tmp/norm_params.json
