@@ -3,4 +3,4 @@
 
 # Prepared data and training outputs
 tmp/
-
+data/**/*.csv
