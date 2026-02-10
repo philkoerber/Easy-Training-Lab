@@ -22,7 +22,6 @@ from tsai.models.TST import TST
 
 SEQ_LEN = 50
 PRED_LEN = 10
-FEATURE_COLS = ["close"]  # minimal: close only; or ["open","high","low","close","volume"]
 VAL_PCT = 0.1
 
 
@@ -47,15 +46,22 @@ def main():
         print(f"Error: not found: {csv_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Load and select features
+    # Load and select features: all columns except timestamp, in CSV order (first = target)
     df = pd.read_csv(csv_path, low_memory=False)
-    for c in FEATURE_COLS:
+    if "timestamp" in df.columns:
+        feature_cols = [c for c in df.columns if c != "timestamp"]
+    else:
+        feature_cols = df.columns.tolist()
+    if not feature_cols:
+        print("Error: no feature columns found", file=sys.stderr)
+        sys.exit(1)
+    for c in feature_cols:
         if c not in df.columns:
             print(f"Error: missing column {c}", file=sys.stderr)
             sys.exit(1)
-    data = df[FEATURE_COLS].astype(np.float64).values
+    data = df[feature_cols].astype(np.float64).values
 
-    n_features = len(FEATURE_COLS)
+    n_features = len(feature_cols)
     n_rows = len(data)
     need = SEQ_LEN + PRED_LEN
     if n_rows < need:
@@ -94,7 +100,7 @@ def main():
         "seq_len": SEQ_LEN,
         "pred_len": PRED_LEN,
         "n_features": n_features,
-        "feature_names": FEATURE_COLS,
+        "feature_names": feature_cols,
         "mean": mean.tolist(),
         "std": std.tolist(),
     }
