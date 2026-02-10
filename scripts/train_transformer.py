@@ -29,9 +29,9 @@ def parse_args():
     p = argparse.ArgumentParser(description="Train OHLCV transformer (tsai TST).")
     p.add_argument("--csv", type=Path, default=None, help="OHLCV CSV (default: tmp/train_ohlcv.csv)")
     p.add_argument("--out-dir", type=Path, default=None, help="Output dir (default: tmp/)")
-    p.add_argument("--epochs", type=int, default=3, help="Epochs for fit_one_cycle")
-    p.add_argument("--batch-size", type=int, default=64, help="Batch size")
-    p.add_argument("--stride", type=int, default=10, help="Sliding window stride (1 = max samples)")
+    p.add_argument("--epochs", type=int, default=20, help="Epochs for fit_one_cycle")
+    p.add_argument("--batch-size", type=int, default=256, help="Batch size")
+    p.add_argument("--stride", type=int, default=1, help="Sliding window stride (1 = max samples)")
     return p.parse_args()
 
 

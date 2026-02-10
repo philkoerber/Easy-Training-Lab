@@ -43,14 +43,14 @@ The pipeline has four stages. You always run **1** and **3**; **2** is optional 
 **Minimal path (raw OHLCV, close only):**
 ```bash
 python3 scripts/prepare_ohlcv.py
-python3 scripts/train_transformer.py --epochs 3
+python3 scripts/train_transformer.py
 ```
 
 **Full path (with engineered features, recommended):**
 ```bash
 python3 scripts/prepare_ohlcv.py
 python3 scripts/feature_engineering.py
-python3 scripts/train_transformer.py --csv tmp/train_features.csv --epochs 3
+python3 scripts/train_transformer.py --csv tmp/train_features.csv
 ```
 
 Step 3 always uses the **first column** of the CSV as the prediction target (next 10 steps). With raw OHLCV that’s `close`; with the feature CSV it’s still `close` because the feature script puts it first. The same `norm_params.json` is used later for inference (e.g. in QuantConnect) so the feature set and order must match at deploy time.
@@ -94,14 +94,14 @@ Train a TST model (50 steps in → 10 out). By default uses `tmp/train_ohlcv.csv
 
 ```bash
 # Raw OHLCV (single column: close)
-python3 scripts/train_transformer.py --epochs 3
+python3 scripts/train_transformer.py
 
 # With engineered features (recommended)
-python3 scripts/feature_engineering.py && python3 scripts/train_transformer.py --csv tmp/train_features.csv --epochs 3
+python3 scripts/feature_engineering.py && python3 scripts/train_transformer.py --csv tmp/train_features.csv
 ```
 
 - **Output:** `tmp/model.pth` (tsai/fastai export), `tmp/norm_params.json` (seq_len, pred_len, feature_names, mean/std).
-- **Options:** `--csv`, `--out-dir`, `--epochs`, `--batch-size`, `--stride`. Feature columns are taken from the CSV (all columns except `timestamp`); the first column is the prediction target.
+- **Options:** `--csv`, `--out-dir`, `--epochs` (default 20), `--batch-size` (default 256), `--stride` (default 1 = max samples). Feature columns are taken from the CSV (all columns except `timestamp`); the first column is the prediction target.
 
 ### 4. Wrap up for QuantConnect
 
