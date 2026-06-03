@@ -1,0 +1,19 @@
+---
+description: North star — local model on QuantConnect, clean load, observable runs
+alwaysApply: true
+---
+
+# Training Lab — goal
+
+Train a TST locally (`scripts/`), package with `wrap_up_for_qc.py`, run on QuantConnect (`quantconnect/main.py`) with the model loaded from Object Store.
+
+## What we're building toward
+
+1. **Clean load** — Resolve latest package via `ohlcv_latest`; load `norm_params.json` + `model_state.pt`; inline TST built from norm params. Fail loudly in debug if anything is missing.
+2. **Train/QC parity** — Same features, order, and normalization as training. `norm_params.json` is the contract. Validate with `test_inference_model.py` before upload.
+3. **Observable runs** — Backtests/live should show: model loaded?, buffer ready?, prediction vs price, enter/exit reason. Use QC `debug` / plot / chart — not new logging stacks.
+
+## Priorities
+
+- Strengthen the local → Object Store → QC path.
+- Keep changes small (see `minimal-changes` rule). Inline PyTorch in `quantconnect/` is intentional.

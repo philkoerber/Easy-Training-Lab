@@ -17,6 +17,13 @@ from pathlib import Path
 
 import requests
 
+from feature_starter_set import (
+    FEATURE_SET,
+    QC_MODULE_NAME,
+    build_feature_spec,
+    render_qc_module,
+)
+
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -81,47 +88,65 @@ def get_qc_headers():
     return headers, org_id
 
 
-def build_package(model_path: Path, norm_path: Path, out_dir: Path) -> list[Path]:
-    """Produce model_state.pt and norm_params.json in out_dir. Returns list of created files."""
+def build_package(model_path: Path, norm_path: Path, out_dir: Path) -> tuple[list[Path], list[Path]]:
+    """Produce QuantConnect package files. Returns (upload_files, local_only_files)."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    created = []
+    upload_files = []
+    local_only_files = []
+    norm_params = None
 
     # Norm params: copy or symlink
     if norm_path.exists():
         dest_norm = out_dir / "norm_params.json"
-        dest_norm.write_text(norm_path.read_text())
-        created.append(dest_norm)
+        norm_text = norm_path.read_text()
+        dest_norm.write_text(norm_text)
+        norm_params = json.loads(norm_text)
+        upload_files.append(dest_norm)
     else:
         print(f"Warning: {norm_path} not found; norm_params.json will be missing.", file=sys.stderr)
 
     # Model: extract state_dict from tsai/fastai export
     if not model_path.exists():
         print(f"Error: {model_path} not found.", file=sys.stderr)
-        return created
+        return upload_files, local_only_files
 
     try:
         from fastai.learner import load_learner
         import torch
     except ImportError as e:
         print(f"Error: need fastai and torch to extract model: {e}", file=sys.stderr)
-        return created
+        return upload_files, local_only_files
 
     learn = load_learner(model_path, cpu=True)
     state = learn.model.state_dict()
     dest_model = out_dir / "model_state.pt"
     torch.save(state, dest_model)
-    created.append(dest_model)
+    upload_files.append(dest_model)
+
+    feature_spec = None
+    if norm_params is not None:
+        feature_spec = build_feature_spec(norm_params)
+        dest_feature_spec = out_dir / "feature_spec.json"
+        dest_feature_spec.write_text(json.dumps(feature_spec, indent=2) + "\n")
+        upload_files.append(dest_feature_spec)
+
+    dest_qc_module = out_dir / QC_MODULE_NAME
+    dest_qc_module.write_text(render_qc_module())
+    local_only_files.append(dest_qc_module)
 
     # Optional manifest (and folder name for upload)
     manifest = {
         "input_shape": [1, "n_features", "seq_len"],
         "output_steps": "pred_len",
-        "files": ["model_state.pt", "norm_params.json"],
+        "files": ["model_state.pt", "norm_params.json", "feature_spec.json"],
+        "feature_set": FEATURE_SET,
     }
+    if feature_spec is not None:
+        manifest["source_hash"] = feature_spec["source_hash"]
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    created.append(out_dir / "manifest.json")
+    upload_files.append(out_dir / "manifest.json")
 
-    return created
+    return upload_files, local_only_files
 
 
 # Key that stores the current upload folder name so the algorithm can resolve "latest"
@@ -162,13 +187,16 @@ def main():
     out_dir = args.out_dir or (tmp / "qc_package")
 
     # Step 1: build package
-    created = build_package(model_path, norm_path, out_dir)
-    if not created:
+    upload_files, local_only_files = build_package(model_path, norm_path, out_dir)
+    if not upload_files:
         print("No files produced.", file=sys.stderr)
         sys.exit(1)
     print(f"Package built in {out_dir}:")
-    for p in created:
+    for p in upload_files:
         print(f"  {p.name}")
+    for p in local_only_files:
+        print(f"  {p.name} (copy into QuantConnect project)")
+    print(f"Deploy hint: copy {out_dir / QC_MODULE_NAME} into your QC project alongside main.py")
 
     # Folder name for Object Store (descriptive + timestamp)
     folder_name = build_upload_folder_name(meta_path, norm_path)
@@ -185,7 +213,7 @@ def main():
         print("Set QC_USER_ID, QC_API_TOKEN, QC_ORGANIZATION_ID to upload (see .env.example).")
         return
 
-    for fpath in created:
+    for fpath in upload_files:
         key = f"{folder_name}/{fpath.name}"
         if upload_file(headers, org_id, key, fpath):
             print(f"Uploaded: {key}")

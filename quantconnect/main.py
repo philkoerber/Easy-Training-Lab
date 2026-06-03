@@ -12,6 +12,13 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+try:
+    from feature_starter_set import FeatureComputer, MIN_WARMUP_BARS, SOURCE_HASH
+except ImportError:
+    FeatureComputer = None
+    MIN_WARMUP_BARS = 20
+    SOURCE_HASH = None
+
 
 def _ifnone(a, b):
     return b if a is None else a
@@ -129,8 +136,7 @@ class TST(nn.Module):
 # -----------------------------------------------------------------------------
 # Object Store: wrap_up_for_qc.py uploads to a folder like ohlcv_btcusd_1min_seq50_pred10_...
 OHLCV_LATEST_KEY = "ohlcv_latest"
-SEQ_LEN = 50
-PRED_LEN = 10
+SEQ_LEN_DEFAULT = 50
 THRESHOLD = 0.001
 
 
@@ -146,15 +152,28 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         self.symbol = self.add_crypto("SOLUSD", Resolution.MINUTE)
         self.model = None
         self.norm_params = None
-        self.bar_buffer = deque(maxlen=SEQ_LEN)
+        self.feature_spec = None
+        self.seq_len = SEQ_LEN_DEFAULT
+        self.feature_computer = None
+        self.ohlcv_buffer = deque(maxlen=MIN_WARMUP_BARS + self.seq_len)
+        self.feature_buffer = deque(maxlen=self.seq_len)
         self.threshold = THRESHOLD
 
         self._load_model_from_object_store()
+        if FeatureComputer is None:
+            self.debug("WARNING: feature_starter_set.py missing. Copy tmp/qc_package/feature_starter_set.py into the QC project.")
+        else:
+            self.feature_computer = FeatureComputer()
+        self.ohlcv_buffer = deque(maxlen=MIN_WARMUP_BARS + self.seq_len)
+        self.feature_buffer = deque(maxlen=self.seq_len)
 
-        if self.model is None or self.norm_params is None:
+        if self.model is None or self.norm_params is None or self.feature_computer is None:
             self.debug("WARNING: Model not loaded. No trades will execute. Check Object Store keys.")
         else:
-            self.debug(f"Model ready. n_features={self.norm_params['n_features']}, seq_len={SEQ_LEN}")
+            self.debug(
+                f"Model ready. n_features={self.norm_params['n_features']}, "
+                f"seq_len={self.seq_len}, warmup={MIN_WARMUP_BARS}"
+            )
 
     # --- Model loading ---
     def _load_model_from_object_store(self):
@@ -172,10 +191,22 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         if not store.contains_key(model_key):
             self.debug(f"Object Store: {model_key} not found.")
             return
+        spec_key = f"{folder}/feature_spec.json"
 
         norm_bytes = store.read_bytes(norm_key)
         self.norm_params = json.loads(bytes(norm_bytes).decode("utf-8"))
         self.debug(f"Loaded norm_params: seq_len={self.norm_params['seq_len']}, pred_len={self.norm_params['pred_len']}")
+        self.seq_len = int(self.norm_params["seq_len"])
+
+        if store.contains_key(spec_key):
+            spec_bytes = store.read_bytes(spec_key)
+            self.feature_spec = json.loads(bytes(spec_bytes).decode("utf-8"))
+            spec_hash = self.feature_spec.get("source_hash")
+            self.debug(f"Loaded feature_spec: feature_set={self.feature_spec.get('feature_set')} source_hash={spec_hash}")
+            if SOURCE_HASH is not None and spec_hash and SOURCE_HASH != spec_hash:
+                self.debug("WARNING: feature_starter_set.py source_hash differs from uploaded feature_spec.")
+        else:
+            self.debug(f"Object Store: {spec_key} not found. Continuing with copied feature_starter_set.py.")
 
         model_bytes = store.read_bytes(model_key)
         try:
@@ -185,37 +216,21 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
 
         n_features = self.norm_params["n_features"]
         pred_len = self.norm_params["pred_len"]
-        seq_len = self.norm_params["seq_len"]
-        self.model = TST(c_in=n_features, c_out=pred_len, seq_len=seq_len)
+        self.model = TST(c_in=n_features, c_out=pred_len, seq_len=self.seq_len)
         self.model.load_state_dict(state_dict, strict=True)
         self.model.eval()
         self.debug("Model loaded successfully.")
 
     # --- Data / inference ---
-    def _bar_to_features(self, bar):
-        """Extract feature tuple (open, high, low, close, volume, trades). QC has no trades; use 0."""
-        o = float(bar.Open)
-        h = float(bar.High)
-        l = float(bar.Low)
-        c = float(bar.Close)
-        v = float(bar.Volume)
-        trades = 0.0
-        return (o, h, l, c, v, trades)
-
     def _run_inference(self):
-        if self.model is None or self.norm_params is None or len(self.bar_buffer) < SEQ_LEN:
+        if self.model is None or self.norm_params is None or len(self.feature_buffer) < self.seq_len:
             return None
         np_params = self.norm_params
         mean = np.array(np_params["mean"], dtype=np.float64)
         std = np.array(np_params["std"], dtype=np.float64)
         std[std == 0] = 1.0
-        feature_names = np_params["feature_names"]
 
-        rows = []
-        for bar in self.bar_buffer:
-            row = self._bar_to_features(bar)
-            rows.append(row)
-        data = np.array(rows, dtype=np.float64)
+        data = np.array(list(self.feature_buffer), dtype=np.float64)
         data_norm = (data - mean) / std
         X = data_norm.T
         X = np.expand_dims(X, axis=0).astype(np.float32)
@@ -237,11 +252,29 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         if not data.Bars.ContainsKey(self.symbol):
             return
         bar = data.Bars[self.symbol]
-        self.bar_buffer.append(bar)
+        self.ohlcv_buffer.append(bar)
 
-        if len(self.bar_buffer) < SEQ_LEN:
-            if len(self.bar_buffer) == 1 or len(self.bar_buffer) % 10 == 0:
-                self.debug(f"Buffer: {len(self.bar_buffer)}/{SEQ_LEN} bars")
+        if self.feature_computer is None:
+            return
+
+        feature_row = self.feature_computer.update(
+            bar.EndTime,
+            bar.Open,
+            bar.High,
+            bar.Low,
+            bar.Close,
+            bar.Volume,
+        )
+        if feature_row is not None:
+            self.feature_buffer.append(feature_row)
+
+        if len(self.feature_buffer) < self.seq_len:
+            raw_needed = MIN_WARMUP_BARS + self.seq_len
+            if len(self.ohlcv_buffer) == 1 or len(self.ohlcv_buffer) % 10 == 0:
+                self.debug(
+                    f"Buffer: raw={len(self.ohlcv_buffer)}/{raw_needed}, "
+                    f"features={len(self.feature_buffer)}/{self.seq_len}"
+                )
             return
 
         # First time we have enough bars

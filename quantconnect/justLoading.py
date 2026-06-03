@@ -44,6 +44,7 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         norm_bytes = store.read_bytes(norm_key)
         self.norm_params = json.loads(bytes(norm_bytes).decode("utf-8"))
         self.debug(f"Loaded norm_params: seq_len={self.norm_params['seq_len']}, pred_len={self.norm_params['pred_len']}, n_features={self.norm_params['n_features']}")
+        self.debug("Full inference also requires feature_starter_set.py copied into the QuantConnect project.")
 
         # Load PyTorch state_dict (verify only; no forward pass here)
         model_bytes = store.read_bytes(model_key)
