@@ -62,7 +62,7 @@ Step 3 always uses the **first column** of the CSV as the prediction target (nex
 Select instrument and timeframe; writes a single normalized CSV for training.
 
 ```bash
-# Defaults: BTCUSD, 1min → tmp/train_ohlcv.csv
+# Defaults: SOLUSD, 1min → tmp/train_ohlcv.csv
 python3 scripts/prepare_ohlcv.py
 
 # Custom

@@ -1,4 +1,4 @@
-# region imports
+ # region imports
 from AlgorithmImports import *
 import json
 import io
@@ -143,13 +143,18 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         self.set_start_date(2024, 11, 1)
         self.set_end_date(2025, 1, 31)
         self.set_cash(100000)
-        self.symbol = self.add_crypto("BTCUSD", Resolution.MINUTE)
+        self.symbol = self.add_crypto("SOLUSD", Resolution.MINUTE)
         self.model = None
         self.norm_params = None
         self.bar_buffer = deque(maxlen=SEQ_LEN)
         self.threshold = THRESHOLD
 
         self._load_model_from_object_store()
+
+        if self.model is None or self.norm_params is None:
+            self.debug("WARNING: Model not loaded. No trades will execute. Check Object Store keys.")
+        else:
+            self.debug(f"Model ready. n_features={self.norm_params['n_features']}, seq_len={SEQ_LEN}")
 
     # --- Model loading ---
     def _load_model_from_object_store(self):
@@ -216,8 +221,13 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         X = np.expand_dims(X, axis=0).astype(np.float32)
         x_t = torch.from_numpy(X)
 
-        with torch.no_grad():
-            pred_norm = self.model(x_t)
+        try:
+            with torch.no_grad():
+                pred_norm = self.model(x_t)
+        except Exception as e:
+            self.debug(f"Inference error: {e}. Check feature count: model expects {self.norm_params['n_features']}, got {data.shape}.")
+            return None
+
         pred_norm_np = pred_norm.numpy().flatten()
         pred_price = pred_norm_np * std[0] + mean[0]
         return pred_price
@@ -230,21 +240,38 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         self.bar_buffer.append(bar)
 
         if len(self.bar_buffer) < SEQ_LEN:
+            if len(self.bar_buffer) == 1 or len(self.bar_buffer) % 10 == 0:
+                self.debug(f"Buffer: {len(self.bar_buffer)}/{SEQ_LEN} bars")
             return
+
+        # First time we have enough bars
+        if not hasattr(self, "_buffer_ready_logged"):
+            self._buffer_ready_logged = True
+            self.debug(f"Buffer full. Starting inference. Symbol={self.symbol}")
 
         pred_price = self._run_inference()
         if pred_price is None:
+            self.debug("Inference skipped: model/norm_params not loaded or buffer short")
             return
 
         current_close = float(bar.Close)
         pred_close = float(pred_price[-1])
         threshold = self.threshold
+        required = current_close * (1 + threshold)
+        condition_met = pred_close > required
+
+        # Throttled: log every ~60 bars
+        if not hasattr(self, "_log_counter"):
+            self._log_counter = 0
+        self._log_counter += 1
+        if self._log_counter % 60 == 1:
+            self.debug(f"pred_close={pred_close:.4f} current={current_close:.4f} required(>0.1%)={required:.4f} condition_met={condition_met} invested={self.portfolio.invested}")
 
         if pred_close > current_close * (1 + threshold):
             if not self.portfolio.invested:
                 self.set_holdings(self.symbol, 1.0)
-                self.debug(f"Inference: pred_close={pred_close:.2f}, current={current_close:.2f}, signal=long")
+                self.debug(f"ENTER LONG: pred_close={pred_close:.4f} current={current_close:.4f}")
         else:
             if self.portfolio.invested:
                 self.liquidate(self.symbol)
-                self.debug(f"Inference: pred_close={pred_close:.2f}, current={current_close:.2f}, signal=flat")
+                self.debug(f"EXIT: pred_close={pred_close:.4f} current={current_close:.4f}")

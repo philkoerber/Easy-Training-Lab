@@ -52,8 +52,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "-i", "--instrument",
-        default="BTCUSD",
-        help="Instrument symbol (default: BTCUSD)",
+        default="SOLUSD",
+        help="Instrument symbol (default: SOLUSD)",
     )
     p.add_argument(
         "-t", "--timeframe",

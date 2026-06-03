@@ -14,8 +14,8 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
     def initialize(self):
         self.set_start_date(2024, 8, 7)
         self.set_cash(100000)
-        # Model is trained on BTCUSD 1min (prepare_ohlcv.py default)
-        self.add_crypto("BTCUSD", Resolution.MINUTE)
+        # Model is trained on SOLUSD 1min (prepare_ohlcv.py default)
+        self.add_crypto("SOLUSD", Resolution.MINUTE)
 
         # Load model and norm params from Object Store (uploaded by wrap_up_for_qc.py)
         self.model_state = None
@@ -58,4 +58,4 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
 
     def on_data(self, data: Slice):
         if not self.portfolio.invested:
-            self.set_holdings("BTCUSD", 1.0)
+            self.set_holdings("SOLUSD", 1.0)

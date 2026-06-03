@@ -1,0 +1,31 @@
+---
+description: Smallest diff, no new architecture — flat script pipeline
+alwaysApply: true
+---
+
+# Training Lab — keep it small
+
+This repo is a **flat script pipeline** (`prepare_ohlcv` → `feature_engineering` → `train_transformer` → `wrap_up_for_qc`) plus `quantconnect/main.py`. It is not a framework.
+
+## Do
+
+- Solve only what was asked; no drive-by refactors or “while we’re here” cleanups.
+- Prefer **editing** an existing script over new files, packages, or layers.
+- Reuse existing functions and patterns (argparse CLIs, outputs under `tmp/`, `norm_params.json` schema).
+- Extract helpers only when the same logic appears **twice** in this repo.
+- Comments only for non-obvious trading/ML/QC constraints.
+
+## Don’t
+
+- Add dependencies, tests, docs, or config unless explicitly requested.
+- Introduce `utils/`, shared packages, or base classes for one-off changes.
+- Add broad try/except, logging, or validation for unlikely edge cases.
+- “Productize” scripts (settings objects, plugin systems, second config formats).
+
+## QuantConnect
+
+Inline PyTorch in `quantconnect/` is intentional when tsai isn’t available. Don’t refactor training code into QC unless asked.
+
+## Before growing a change
+
+Ask whether a short edit in the current file is enough. If a diff would grow large, propose the smaller approach first.
