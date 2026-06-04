@@ -141,6 +141,10 @@ def build_package(model_path: Path, norm_path: Path, out_dir: Path) -> tuple[lis
         "files": ["model_state.pt", "norm_params.json", "feature_spec.json"],
         "feature_set": FEATURE_SET,
     }
+    if norm_params is not None:
+        for key in ("target_type", "target_feature", "target_horizon_steps"):
+            if key in norm_params:
+                manifest[key] = norm_params[key]
     if feature_spec is not None:
         manifest["source_hash"] = feature_spec["source_hash"]
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))

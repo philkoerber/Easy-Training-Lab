@@ -32,7 +32,25 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=20, help="Epochs for fit_one_cycle")
     p.add_argument("--batch-size", type=int, default=256, help="Batch size")
     p.add_argument("--stride", type=int, default=1, help="Sliding window stride (1 = max samples)")
+    p.add_argument("--train-end", default=None, help="Last timestamp/date used for training stats and samples")
+    p.add_argument("--val-start", default=None, help="First timestamp/date used for validation samples")
+    p.add_argument("--val-end", default=None, help="Last timestamp/date used for validation samples")
     return p.parse_args()
+
+
+def _parse_timestamps(df: pd.DataFrame) -> pd.Series | None:
+    if "timestamp" not in df.columns:
+        return None
+    ts_num = pd.to_numeric(df["timestamp"], errors="coerce")
+    if ts_num.notna().any():
+        return pd.to_datetime(ts_num, unit="s", utc=True, errors="coerce")
+    return pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+
+
+def _parse_date(value: str | None):
+    if value is None:
+        return None
+    return pd.Timestamp(value, tz="UTC")
 
 
 def main():
@@ -48,6 +66,7 @@ def main():
 
     # Load and select features: all columns except timestamp, in CSV order (first = target)
     df = pd.read_csv(csv_path, low_memory=False)
+    timestamps = _parse_timestamps(df)
     if "timestamp" in df.columns:
         feature_cols = [c for c in df.columns if c != "timestamp"]
     else:
@@ -68,10 +87,21 @@ def main():
         print(f"Error: need at least {need} rows, got {n_rows}", file=sys.stderr)
         sys.exit(1)
 
-    # Time-based split: use first (1 - VAL_PCT) for train stats and both splits
-    n_val = int(n_rows * VAL_PCT)
-    n_train = n_rows - n_val
-    train_data = data[:n_train]
+    train_end = _parse_date(args.train_end)
+    val_start = _parse_date(args.val_start)
+    val_end = _parse_date(args.val_end)
+
+    # Time-based split: use first (1 - VAL_PCT) for train stats unless date flags are provided.
+    if timestamps is not None and train_end is not None:
+        train_rows = timestamps <= train_end
+        if not train_rows.any():
+            print(f"Error: --train-end leaves no training rows: {args.train_end}", file=sys.stderr)
+            sys.exit(1)
+        train_data = data[train_rows.to_numpy()]
+    else:
+        n_val = int(n_rows * VAL_PCT)
+        n_train = n_rows - n_val
+        train_data = data[:n_train]
 
     # Z-score normalize using train stats
     mean = np.nanmean(train_data, axis=0)
@@ -79,21 +109,52 @@ def main():
     std[std == 0] = 1.0
     data_norm = (data - mean) / std
 
-    # Sliding windows
+    # Sliding windows: target is future close return from the current input-window close.
     stride = max(1, args.stride)
     X_list, y_list = [], []
+    sample_time_list = []
     for i in range(0, n_rows - need + 1, stride):
         X_list.append(data_norm[i : i + SEQ_LEN].T)  # (n_features, SEQ_LEN)
-        y_list.append(data_norm[i + SEQ_LEN : i + SEQ_LEN + PRED_LEN, 0])  # next 10 of first feature (close)
+        current_close = data[i + SEQ_LEN - 1, 0]
+        future_close = data[i + SEQ_LEN : i + SEQ_LEN + PRED_LEN, 0]
+        y_list.append((future_close / current_close) - 1.0)
+        if timestamps is not None:
+            sample_time_list.append(timestamps.iloc[i + SEQ_LEN - 1])
 
     X = np.stack(X_list, axis=0).astype(np.float32)   # (n_samples, n_features, SEQ_LEN)
-    y = np.stack(y_list, axis=0).astype(np.float32)  # (n_samples, PRED_LEN)
+    y_raw = np.stack(y_list, axis=0).astype(np.float64)  # (n_samples, PRED_LEN)
 
-    # Splits: time-based, last portion as val (by index in X)
+    # Splits: time-based, last portion as val (by index in X) unless date flags are provided.
     n_samples = X.shape[0]
-    n_val_samples = max(1, int(n_samples * VAL_PCT))
-    val_start = n_samples - n_val_samples
-    splits = (np.arange(0, val_start), np.arange(val_start, n_samples))
+    if timestamps is not None and (train_end is not None or val_start is not None or val_end is not None):
+        sample_times = pd.Series(sample_time_list)
+        if val_start is not None or val_end is not None:
+            val_mask = pd.Series([True] * n_samples)
+            if val_start is not None:
+                val_mask &= sample_times >= val_start
+            if val_end is not None:
+                val_mask &= sample_times <= val_end
+            train_mask = ~val_mask
+            if val_start is not None:
+                train_mask &= sample_times < val_start
+        else:
+            train_mask = sample_times <= train_end
+            val_mask = sample_times > train_end
+        train_idx = np.flatnonzero(train_mask.to_numpy())
+        val_idx = np.flatnonzero(val_mask.to_numpy())
+        if len(train_idx) == 0 or len(val_idx) == 0:
+            print("Error: date split produced empty train or validation samples", file=sys.stderr)
+            sys.exit(1)
+        splits = (train_idx, val_idx)
+    else:
+        n_val_samples = max(1, int(n_samples * VAL_PCT))
+        val_start_idx = n_samples - n_val_samples
+        splits = (np.arange(0, val_start_idx), np.arange(val_start_idx, n_samples))
+
+    target_mean = np.nanmean(y_raw[splits[0]], axis=0)
+    target_std = np.nanstd(y_raw[splits[0]], axis=0)
+    target_std[target_std == 0] = 1.0
+    y = ((y_raw - target_mean) / target_std).astype(np.float32)
 
     # Norm params for inference / QC
     norm_params = {
@@ -103,6 +164,11 @@ def main():
         "feature_names": feature_cols,
         "mean": mean.tolist(),
         "std": std.tolist(),
+        "target_type": "future_return",
+        "target_feature": feature_cols[0],
+        "target_mean": target_mean.tolist(),
+        "target_std": target_std.tolist(),
+        "target_horizon_steps": PRED_LEN,
     }
     norm_path = out_dir / "norm_params.json"
     with open(norm_path, "w") as f:

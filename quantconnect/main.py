@@ -137,7 +137,10 @@ class TST(nn.Module):
 # Object Store: wrap_up_for_qc.py uploads to a folder like ohlcv_btcusd_1min_seq50_pred10_...
 OHLCV_LATEST_KEY = "ohlcv_latest"
 SEQ_LEN_DEFAULT = 50
-THRESHOLD = 0.001
+ENTRY_THRESHOLD = 0.001
+EXIT_THRESHOLD = -0.0005
+MIN_HOLD_BARS = 10
+SIGNAL_HORIZON = -1
 
 
 # -----------------------------------------------------------------------------
@@ -157,7 +160,12 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         self.feature_computer = None
         self.ohlcv_buffer = deque(maxlen=MIN_WARMUP_BARS + self.seq_len)
         self.feature_buffer = deque(maxlen=self.seq_len)
-        self.threshold = THRESHOLD
+        self.entry_threshold = ENTRY_THRESHOLD
+        self.exit_threshold = EXIT_THRESHOLD
+        self.min_hold_bars = MIN_HOLD_BARS
+        self.signal_horizon = SIGNAL_HORIZON
+        self.bar_count = 0
+        self.entry_bar_count = None
 
         self._load_model_from_object_store()
         if FeatureComputer is None:
@@ -222,7 +230,7 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
         self.debug("Model loaded successfully.")
 
     # --- Data / inference ---
-    def _run_inference(self):
+    def _run_inference(self, current_close):
         if self.model is None or self.norm_params is None or len(self.feature_buffer) < self.seq_len:
             return None
         np_params = self.norm_params
@@ -244,14 +252,24 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
             return None
 
         pred_norm_np = pred_norm.numpy().flatten()
-        pred_price = pred_norm_np * std[0] + mean[0]
-        return pred_price
+        if np_params.get("target_type") == "future_return":
+            target_mean = np.array(np_params["target_mean"], dtype=np.float64)
+            target_std = np.array(np_params["target_std"], dtype=np.float64)
+            target_std[target_std == 0] = 1.0
+            pred_return = pred_norm_np * target_std + target_mean
+            pred_price = float(current_close) * (1.0 + pred_return)
+        else:
+            # Backward compatible path for older packages trained on future close prices.
+            pred_price = pred_norm_np * std[0] + mean[0]
+            pred_return = (pred_price / float(current_close)) - 1.0
+        return pred_return, pred_price
 
     # --- Trading logic ---
     def on_data(self, data: Slice):
         if not data.Bars.ContainsKey(self.symbol):
             return
         bar = data.Bars[self.symbol]
+        self.bar_count += 1
         self.ohlcv_buffer.append(bar)
 
         if self.feature_computer is None:
@@ -282,29 +300,47 @@ class LogicalFluorescentOrangeGiraffe(QCAlgorithm):
             self._buffer_ready_logged = True
             self.debug(f"Buffer full. Starting inference. Symbol={self.symbol}")
 
-        pred_price = self._run_inference()
-        if pred_price is None:
+        current_close = float(bar.Close)
+        prediction = self._run_inference(current_close)
+        if prediction is None:
             self.debug("Inference skipped: model/norm_params not loaded or buffer short")
             return
+        pred_return, pred_price = prediction
 
-        current_close = float(bar.Close)
-        pred_close = float(pred_price[-1])
-        threshold = self.threshold
-        required = current_close * (1 + threshold)
-        condition_met = pred_close > required
+        horizon = self.signal_horizon
+        if horizon < 0:
+            horizon = len(pred_return) + horizon
+        if horizon < 0 or horizon >= len(pred_return):
+            self.debug(f"Invalid SIGNAL_HORIZON={self.signal_horizon} for pred_len={len(pred_return)}")
+            return
+        pred_ret = float(pred_return[horizon])
+        pred_close = float(pred_price[horizon])
+        enter_signal = pred_ret > self.entry_threshold
+        exit_signal = pred_ret < self.exit_threshold
+        held_bars = 0 if self.entry_bar_count is None else self.bar_count - self.entry_bar_count
+        can_exit = held_bars >= self.min_hold_bars
 
         # Throttled: log every ~60 bars
         if not hasattr(self, "_log_counter"):
             self._log_counter = 0
         self._log_counter += 1
         if self._log_counter % 60 == 1:
-            self.debug(f"pred_close={pred_close:.4f} current={current_close:.4f} required(>0.1%)={required:.4f} condition_met={condition_met} invested={self.portfolio.invested}")
+            self.debug(
+                f"pred_return={pred_ret:.4%} pred_close={pred_close:.4f} current={current_close:.4f} "
+                f"enter(>{self.entry_threshold:.2%})={enter_signal} "
+                f"exit(<{self.exit_threshold:.2%})={exit_signal} held_bars={held_bars} invested={self.portfolio.invested}"
+            )
 
-        if pred_close > current_close * (1 + threshold):
-            if not self.portfolio.invested:
+        if not self.portfolio.invested:
+            self.entry_bar_count = None
+            if enter_signal:
                 self.set_holdings(self.symbol, 1.0)
-                self.debug(f"ENTER LONG: pred_close={pred_close:.4f} current={current_close:.4f}")
-        else:
-            if self.portfolio.invested:
-                self.liquidate(self.symbol)
-                self.debug(f"EXIT: pred_close={pred_close:.4f} current={current_close:.4f}")
+                self.entry_bar_count = self.bar_count
+                self.debug(f"ENTER LONG: pred_return={pred_ret:.4%} pred_close={pred_close:.4f} current={current_close:.4f}")
+        elif exit_signal and can_exit:
+            self.liquidate(self.symbol)
+            self.debug(
+                f"EXIT: pred_return={pred_ret:.4%} pred_close={pred_close:.4f} "
+                f"current={current_close:.4f} held_bars={held_bars}"
+            )
+            self.entry_bar_count = None
