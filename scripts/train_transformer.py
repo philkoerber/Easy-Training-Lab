@@ -9,11 +9,21 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
+
+from run_results import (
+    append_benchmark,
+    new_run_id,
+    read_train_meta,
+    run_dir,
+    set_latest_run,
+    write_json,
+)
 
 # tsai
 from tsai.data.core import get_ts_dls
@@ -56,8 +66,8 @@ def _parse_date(value: str | None):
 def main():
     args = parse_args()
     root = Path(__file__).resolve().parent.parent
-    csv_path = args.csv or (root / "tmp" / "train_ohlcv.csv")
-    out_dir = args.out_dir or (root / "tmp")
+    csv_path = (args.csv or (root / "tmp" / "train_ohlcv.csv")).resolve()
+    out_dir = (args.out_dir or (root / "tmp")).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not csv_path.exists():
@@ -190,6 +200,73 @@ def main():
     )
     learn = ts_learner(dls, model, device=device)
     learn.fit_one_cycle(args.epochs)
+
+    run_id = new_run_id()
+    results_path = run_dir(root, run_id)
+    set_latest_run(root, run_id)
+
+    rec_values = learn.recorder.values
+    rec_times = getattr(learn.recorder, "times", [])
+    train_history = []
+    for i, row in enumerate(rec_values):
+        entry = {
+            "epoch": i,
+            "train_loss": float(row[0]),
+            "valid_loss": float(row[1]),
+        }
+        if i < len(rec_times):
+            entry["time_s"] = float(rec_times[i])
+        train_history.append(entry)
+
+    meta_path = csv_path.parent / "train_meta.txt"
+    run_meta = {
+        "run_id": run_id,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "script": "train_transformer.py",
+        "csv": str(csv_path.relative_to(root)),
+        "out_dir": str(out_dir.relative_to(root)),
+        "model_path": str((out_dir / "model.pth").relative_to(root)),
+        "norm_params_path": str(norm_path.relative_to(root)),
+        "device": device,
+        "n_train_samples": int(len(splits[0])),
+        "n_val_samples": int(len(splits[1])),
+        "n_features": n_features,
+        "args": {
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "stride": args.stride,
+            "train_end": args.train_end,
+            "val_start": args.val_start,
+            "val_end": args.val_end,
+        },
+        "train_meta": read_train_meta(meta_path),
+    }
+    if train_history:
+        run_meta["final_train_loss"] = train_history[-1]["train_loss"]
+        run_meta["final_valid_loss"] = train_history[-1]["valid_loss"]
+
+    write_json(results_path / "run_meta.json", run_meta)
+    write_json(results_path / "train_history.json", train_history)
+    append_benchmark(
+        root,
+        {
+            "type": "train",
+            "run_id": run_id,
+            "epochs": args.epochs,
+            "stride": args.stride,
+            "batch_size": args.batch_size,
+            "train_end": args.train_end,
+            "val_start": args.val_start,
+            "val_end": args.val_end,
+            "n_train_samples": run_meta["n_train_samples"],
+            "n_val_samples": run_meta["n_val_samples"],
+            "final_train_loss": run_meta.get("final_train_loss"),
+            "final_valid_loss": run_meta.get("final_valid_loss"),
+            "device": device,
+            "instrument": run_meta["train_meta"].get("instrument"),
+        },
+    )
+    print(f"Saved results to {results_path.relative_to(root)}/")
 
     # Export full learner (for wrap-up to extract state_dict)
     model_path = out_dir / "model.pth"

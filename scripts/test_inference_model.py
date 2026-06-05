@@ -15,12 +15,13 @@ import numpy as np
 import pandas as pd
 import torch
 
+from run_results import append_benchmark, load_latest_run_id, run_dir, write_json
 from tsai.models.TST import TST
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Test inference on a few sequences from training data.")
-    p.add_argument("--csv", type=Path, default=None, help="Training CSV (default: tmp/train_ohlcv.csv)")
+    p.add_argument("--csv", type=Path, default=None, help="Feature CSV (default: tmp/train_features.csv)")
     p.add_argument("--norm", type=Path, default=None, help="norm_params.json (default: tmp/norm_params.json)")
     p.add_argument("--model", type=Path, default=None, help="model.pth or model_state.pt (default: tmp/model.pth)")
     p.add_argument("-n", "--num-sequences", type=int, default=5, help="Number of sequences to test (default: 5)")
@@ -31,6 +32,8 @@ def parse_args():
     p.add_argument("--exit-threshold", type=float, default=-0.0005, help="Exit threshold for summary metrics")
     p.add_argument("--horizon", type=int, default=-1, help="Prediction horizon index for summary metrics")
     p.add_argument("--summary-only", action="store_true", help="Only print aggregate diagnostics")
+    p.add_argument("--save-results", action="store_true", help="Save holdout metrics under results/runs/")
+    p.add_argument("--run-id", default=None, help="Run id for results (default: latest train run)")
     return p.parse_args()
 
 
@@ -60,9 +63,9 @@ def main():
     args = parse_args()
     root = Path(__file__).resolve().parent.parent
     tmp = root / "tmp"
-    csv_path = args.csv or (tmp / "train_ohlcv.csv")
-    norm_path = args.norm or (tmp / "norm_params.json")
-    model_path = args.model or (tmp / "model.pth")
+    csv_path = (args.csv or (tmp / "train_features.csv")).resolve()
+    norm_path = (args.norm or (tmp / "norm_params.json")).resolve()
+    model_path = (args.model or (tmp / "model.pth")).resolve()
     n_seq = max(1, args.num_sequences)
 
     if not norm_path.exists():
@@ -185,6 +188,36 @@ def main():
     direction_hits = np.sign(pred_h) == np.sign(actual_h)
     price_mae = np.abs(pred_price[:, horizon_idx] - y_actual_price[:, horizon_idx]).mean()
 
+    train_close_mean = float(mean[0])
+    eval_close_mean = float(current_close.mean())
+    regime_gap = None
+    if train_close_mean != 0:
+        regime_gap = float((eval_close_mean / train_close_mean) - 1.0)
+
+    metrics = {
+        "n_sequences": len(starts),
+        "seq_len": seq_len,
+        "pred_len": pred_len,
+        "horizon": horizon_idx,
+        "target_type": target_type,
+        "price_mae": float(price_mae),
+        "mean_return_bias": float(bias.mean()),
+        "median_return_bias": float(np.median(bias)),
+        "mean_price_bias": float(price_bias.mean()),
+        "median_price_bias": float(np.median(price_bias)),
+        "directional_hit_rate": float(direction_hits.mean()),
+        "pred_above_entry_rate": float((pred_h > args.threshold).mean()),
+        "pred_below_exit_rate": float((pred_h < args.exit_threshold).mean()),
+        "entry_threshold": args.threshold,
+        "exit_threshold": args.exit_threshold,
+        "eval_close_mean": eval_close_mean,
+        "train_close_mean": train_close_mean,
+        "regime_gap": regime_gap,
+        "start_date": args.start_date,
+        "end_date": args.end_date,
+        "sample_step": args.sample_step,
+    }
+
     print(f"\nInference summary on {len(starts)} sequence(s) (seq_len={seq_len}, pred_len={pred_len}, horizon={horizon_idx}):")
     print(f"  target_type:          {target_type}")
     print(f"  price MAE:            {price_mae:.6f}")
@@ -195,11 +228,25 @@ def main():
     print(f"  directional hit rate: {direction_hits.mean():.2%}")
     print(f"  pred > entry thresh:  {(pred_h > args.threshold).mean():.2%} (threshold={args.threshold:.4%})")
     print(f"  pred < exit thresh:   {(pred_h < args.exit_threshold).mean():.2%} (threshold={args.exit_threshold:.4%})")
-    train_close_mean = float(mean[0])
-    eval_close_mean = float(current_close.mean())
-    if train_close_mean != 0:
-        regime_gap = (eval_close_mean / train_close_mean) - 1.0
+    if regime_gap is not None:
         print(f"  eval close mean:      {eval_close_mean:.6f} ({regime_gap:.2%} vs train mean close)")
+
+    if args.save_results:
+        run_id = args.run_id or load_latest_run_id(root)
+        if run_id is None:
+            run_id = "inference_only"
+        out_path = run_dir(root, run_id)
+        holdout = {
+            "run_id": run_id,
+            "script": "test_inference_model.py",
+            "csv": str(csv_path.relative_to(root)),
+            "model": str(model_path.relative_to(root)),
+            "norm": str(norm_path.relative_to(root)),
+            **metrics,
+        }
+        write_json(out_path / "holdout.json", holdout)
+        append_benchmark(root, {"type": "holdout", "run_id": run_id, **metrics})
+        print(f"Saved holdout to {out_path.relative_to(root)}/holdout.json")
 
     if args.summary_only:
         print("Done.")

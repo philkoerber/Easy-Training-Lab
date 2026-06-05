@@ -137,8 +137,8 @@ class TST(nn.Module):
 # Object Store: wrap_up_for_qc.py uploads to a folder like ohlcv_btcusd_1min_seq50_pred10_...
 OHLCV_LATEST_KEY = "ohlcv_latest"
 SEQ_LEN_DEFAULT = 50
-ENTRY_THRESHOLD = 0.001
-EXIT_THRESHOLD = -0.0005
+ENTRY_THRESHOLD = 0.00005
+EXIT_THRESHOLD = -0.00003
 MIN_HOLD_BARS = 10
 SIGNAL_HORIZON = -1
 

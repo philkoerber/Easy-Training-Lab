@@ -3,5 +3,6 @@
 
 # Prepared data and training outputs
 tmp/
+results/
 data/**/*.csv
 .venv/
