@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 
 FEATURE_SET = "starter_set"
-FEATURE_SET_VERSION = "1"
+FEATURE_SET_VERSION = "2"
 
 # Output column order (after timestamp). First = target for trainer.
 OUTPUT_COLS = [
@@ -35,13 +35,15 @@ OUTPUT_COLS = [
     "return_lag_5",
     "rolling_vol_5",
     "rolling_vol_20",
-    "bar_range",
+    "bar_range_pct",
     "relative_volume",
     "body_ratio",
     "rsi_14",
-    "macd_line",
-    "macd_signal",
+    "macd_line_pct",
+    "macd_signal_pct",
 ]
+
+MODEL_INPUT_COLS = [c for c in OUTPUT_COLS if c != "close"]
 
 RSI_PERIOD = 14
 MACD_FAST, MACD_SLOW, MACD_SIGNAL = 12, 26, 9
@@ -177,7 +179,7 @@ def build_features(df):
     rolling_vol_5 = log_return.rolling(ROLLING_VOL_WINDOWS[0]).std()
     rolling_vol_20 = log_return.rolling(ROLLING_VOL_WINDOWS[1]).std()
 
-    bar_range = (df["high"] - df["low"]) / close.replace(0, np.nan)
+    bar_range_pct = (df["high"] - df["low"]) / close.replace(0, np.nan)
     body = (df["close"] - df["open"]).abs()
     range_hl = df["high"] - df["low"]
     body_ratio = body / range_hl.replace(0, np.nan)
@@ -188,6 +190,8 @@ def build_features(df):
 
     rsi_14 = rsi(close, RSI_PERIOD)
     macd_line, macd_signal = macd_line_and_signal(close)
+    macd_line_pct = macd_line / close.replace(0, np.nan)
+    macd_signal_pct = macd_signal / close.replace(0, np.nan)
 
     out = pd.DataFrame({
         "timestamp": df["timestamp"].values,
@@ -200,12 +204,12 @@ def build_features(df):
         **return_lag_cols,
         "rolling_vol_5": rolling_vol_5.values,
         "rolling_vol_20": rolling_vol_20.values,
-        "bar_range": bar_range.values,
+        "bar_range_pct": bar_range_pct.values,
         "relative_volume": relative_volume.values,
         "body_ratio": body_ratio.values,
         "rsi_14": rsi_14.values,
-        "macd_line": macd_line.values,
-        "macd_signal": macd_signal.values,
+        "macd_line_pct": macd_line_pct.values,
+        "macd_signal_pct": macd_signal_pct.values,
     })
 
     out = out.dropna().reset_index(drop=True)
@@ -271,13 +275,14 @@ class FeatureComputer:
         rolling_vol_20 = _rolling_std(self.log_returns)
         vol_ma = sum(self.volumes) / len(self.volumes)
         relative_volume = volume / vol_ma if vol_ma != 0 else float("nan")
-        bar_range = (high - low) / close if close != 0 else float("nan")
+        bar_range_pct = (high - low) / close if close != 0 else float("nan")
         range_hl = high - low
         body_ratio = abs(close - open_) / range_hl if range_hl != 0 else 0.0
         returns = list(self.log_returns)
+        macd_line_pct = macd_line / close if close != 0 else float("nan")
+        macd_signal_pct = self.macd_signal / close if close != 0 else float("nan")
 
         row = [
-            close,
             float(time_of_day_sin),
             float(time_of_day_cos),
             float(day_of_week_sin),
@@ -290,12 +295,12 @@ class FeatureComputer:
             returns[-6],
             rolling_vol_5,
             rolling_vol_20,
-            bar_range,
+            bar_range_pct,
             relative_volume,
             body_ratio,
             rsi_14,
-            macd_line,
-            self.macd_signal,
+            macd_line_pct,
+            macd_signal_pct,
         ]
         if any(np.isnan(v) for v in row):
             return None
@@ -312,7 +317,10 @@ def build_feature_spec(norm_params: dict) -> dict:
         "feature_set": FEATURE_SET,
         "feature_set_version": FEATURE_SET_VERSION,
         "source_hash": source_hash(),
-        "feature_names": list(norm_params.get("feature_names", OUTPUT_COLS)),
+        "feature_names": list(norm_params.get("feature_names", MODEL_INPUT_COLS)),
+        "target_feature": norm_params.get("target_feature"),
+        "output_cols": list(OUTPUT_COLS),
+        "model_input_cols": list(MODEL_INPUT_COLS),
         "constants": {
             "rsi_period": RSI_PERIOD,
             "macd_fast": MACD_FAST,
@@ -341,6 +349,7 @@ def render_qc_module() -> str:
         "FEATURE_SET_VERSION": FEATURE_SET_VERSION,
         "SOURCE_HASH": source_hash(),
         "OUTPUT_COLS": OUTPUT_COLS,
+        "MODEL_INPUT_COLS": MODEL_INPUT_COLS,
         "RSI_PERIOD": RSI_PERIOD,
         "MACD_FAST": MACD_FAST,
         "MACD_SLOW": MACD_SLOW,

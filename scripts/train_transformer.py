@@ -74,13 +74,18 @@ def main():
         print(f"Error: not found: {csv_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Load and select features: all columns except timestamp, in CSV order (first = target)
+    # Load features. Keep close as the target source, but do not feed raw close
+    # into the model input.
     df = pd.read_csv(csv_path, low_memory=False)
     timestamps = _parse_timestamps(df)
+    target_col = "close"
+    if target_col not in df.columns:
+        print(f"Error: missing target column: {target_col}", file=sys.stderr)
+        sys.exit(1)
     if "timestamp" in df.columns:
-        feature_cols = [c for c in df.columns if c != "timestamp"]
+        feature_cols = [c for c in df.columns if c not in ("timestamp", target_col)]
     else:
-        feature_cols = df.columns.tolist()
+        feature_cols = [c for c in df.columns if c != target_col]
     if not feature_cols:
         print("Error: no feature columns found", file=sys.stderr)
         sys.exit(1)
@@ -89,6 +94,7 @@ def main():
             print(f"Error: missing column {c}", file=sys.stderr)
             sys.exit(1)
     data = df[feature_cols].astype(np.float64).values
+    target_close = df[target_col].astype(np.float64).values
 
     n_features = len(feature_cols)
     n_rows = len(data)
@@ -108,10 +114,12 @@ def main():
             print(f"Error: --train-end leaves no training rows: {args.train_end}", file=sys.stderr)
             sys.exit(1)
         train_data = data[train_rows.to_numpy()]
+        train_target_close = target_close[train_rows.to_numpy()]
     else:
         n_val = int(n_rows * VAL_PCT)
         n_train = n_rows - n_val
         train_data = data[:n_train]
+        train_target_close = target_close[:n_train]
 
     # Z-score normalize using train stats
     mean = np.nanmean(train_data, axis=0)
@@ -125,8 +133,8 @@ def main():
     sample_time_list = []
     for i in range(0, n_rows - need + 1, stride):
         X_list.append(data_norm[i : i + SEQ_LEN].T)  # (n_features, SEQ_LEN)
-        current_close = data[i + SEQ_LEN - 1, 0]
-        future_close = data[i + SEQ_LEN : i + SEQ_LEN + PRED_LEN, 0]
+        current_close = target_close[i + SEQ_LEN - 1]
+        future_close = target_close[i + SEQ_LEN : i + SEQ_LEN + PRED_LEN]
         y_list.append((future_close / current_close) - 1.0)
         if timestamps is not None:
             sample_time_list.append(timestamps.iloc[i + SEQ_LEN - 1])
@@ -175,7 +183,9 @@ def main():
         "mean": mean.tolist(),
         "std": std.tolist(),
         "target_type": "future_return",
-        "target_feature": feature_cols[0],
+        "target_feature": target_col,
+        "target_close_mean": float(np.nanmean(train_target_close)),
+        "target_close_std": float(np.nanstd(train_target_close)),
         "target_mean": target_mean.tolist(),
         "target_std": target_std.tolist(),
         "target_horizon_steps": PRED_LEN,
@@ -231,6 +241,8 @@ def main():
         "n_train_samples": int(len(splits[0])),
         "n_val_samples": int(len(splits[1])),
         "n_features": n_features,
+        "target_feature": target_col,
+        "feature_names": feature_cols,
         "args": {
             "epochs": args.epochs,
             "batch_size": args.batch_size,

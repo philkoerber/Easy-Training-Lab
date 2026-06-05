@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from feature_starter_set import FeatureComputer, OUTPUT_COLS, build_features
+from feature_starter_set import FeatureComputer, MODEL_INPUT_COLS, build_features
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,7 +50,7 @@ def main() -> None:
             stream_rows.append(feature_row)
 
     stream = np.asarray(stream_rows, dtype=np.float64)
-    batch_values = batch[OUTPUT_COLS].to_numpy(dtype=np.float64)
+    batch_values = batch[MODEL_INPUT_COLS].to_numpy(dtype=np.float64)
 
     if stream.shape != batch_values.shape:
         print(f"Error: shape mismatch batch={batch_values.shape} stream={stream.shape}", file=sys.stderr)
@@ -61,14 +61,14 @@ def main() -> None:
         row_idx, col_idx = np.unravel_index(np.nanargmax(diff), diff.shape)
         print(
             "Error: feature mismatch "
-            f"row={row_idx} column={OUTPUT_COLS[col_idx]} "
+            f"row={row_idx} column={MODEL_INPUT_COLS[col_idx]} "
             f"batch={batch_values[row_idx, col_idx]} stream={stream[row_idx, col_idx]} "
             f"abs_diff={diff[row_idx, col_idx]}",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    print(f"Feature parity OK: {len(stream):,} rows, {len(OUTPUT_COLS)} columns")
+    print(f"Feature parity OK: {len(stream):,} rows, {len(MODEL_INPUT_COLS)} model input columns")
 
 
 if __name__ == "__main__":

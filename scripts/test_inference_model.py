@@ -80,6 +80,7 @@ def main():
     pred_len = int(norm_params["pred_len"])
     n_features = int(norm_params["n_features"])
     feature_names = norm_params["feature_names"]
+    target_feature = norm_params.get("target_feature", feature_names[0])
     target_type = norm_params.get("target_type", "price")
     mean = np.array(norm_params["mean"], dtype=np.float64)
     std = np.array(norm_params["std"], dtype=np.float64)
@@ -122,7 +123,11 @@ def main():
         if c not in df.columns:
             print(f"Error: CSV missing column '{c}' (expected from norm_params)", file=sys.stderr)
             sys.exit(1)
+    if target_feature not in df.columns:
+        print(f"Error: CSV missing target column '{target_feature}'", file=sys.stderr)
+        sys.exit(1)
     data = df[feature_names].astype(np.float64).values
+    target_close = df[target_feature].astype(np.float64).values
     need = seq_len + pred_len
     if data.shape[0] < need:
         print(f"Error: need at least {need} rows, got {data.shape[0]}", file=sys.stderr)
@@ -153,8 +158,8 @@ def main():
     future_close_list = []
     for i in starts:
         X_list.append(data_norm[i : i + seq_len].T)
-        current_close_list.append(data[i + seq_len - 1, 0])
-        future_close_list.append(data[i + seq_len : i + seq_len + pred_len, 0])
+        current_close_list.append(target_close[i + seq_len - 1])
+        future_close_list.append(target_close[i + seq_len : i + seq_len + pred_len])
     X = np.stack(X_list, axis=0).astype(np.float32)
     current_close = np.array(current_close_list, dtype=np.float64)
     future_close = np.stack(future_close_list, axis=0).astype(np.float64)
@@ -188,7 +193,7 @@ def main():
     direction_hits = np.sign(pred_h) == np.sign(actual_h)
     price_mae = np.abs(pred_price[:, horizon_idx] - y_actual_price[:, horizon_idx]).mean()
 
-    train_close_mean = float(mean[0])
+    train_close_mean = float(norm_params.get("target_close_mean", mean[0]))
     eval_close_mean = float(current_close.mean())
     regime_gap = None
     if train_close_mean != 0:
